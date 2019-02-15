@@ -653,6 +653,16 @@ public:
   char last_commit_pos_file[FN_REFLEN];
   my_off_t last_commit_pos_offset;
   ulong current_binlog_id;
+  /*
+    to facilitate in running slow shutdown the var is changed from default
+    at shutdown, and is checked by dump threads.
+  */
+  enum enum_shutdown_phase
+  {
+    SHDN_NONE= 0,
+    SHDN_PREPARE,
+    SHDN_DOIT
+  } slaves_wait_shutdown;
 
   MYSQL_BIN_LOG(uint *sync_period);
   /*

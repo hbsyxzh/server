@@ -3222,7 +3222,7 @@ MYSQL_BIN_LOG::MYSQL_BIN_LOG(uint *sync_period)
    checksum_alg_reset(BINLOG_CHECKSUM_ALG_UNDEF),
    relay_log_checksum_alg(BINLOG_CHECKSUM_ALG_UNDEF),
    description_event_for_exec(0), description_event_for_queue(0),
-   current_binlog_id(0)
+   current_binlog_id(0), slaves_wait_shutdown(SHDN_NONE)
 {
   /*
     We don't want to initialize locks here as such initialization depends on

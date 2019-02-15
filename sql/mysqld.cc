@@ -733,6 +733,7 @@ mysql_rwlock_t LOCK_ssl_refresh;
 mysql_rwlock_t LOCK_all_status_vars;
 mysql_prlock_t LOCK_system_variables_hash;
 mysql_cond_t COND_start_thread;
+mysql_cond_t COND_slave_list;
 pthread_t signal_thread;
 pthread_attr_t connection_attrib;
 mysql_mutex_t LOCK_server_started;
@@ -1034,7 +1035,7 @@ PSI_cond_key key_BINLOG_COND_xid_list,
   key_TABLE_SHARE_cond, key_user_level_lock_cond,
   key_COND_thread_cache, key_COND_flush_thread_cache,
   key_COND_start_thread, key_COND_binlog_send,
-  key_BINLOG_COND_queue_busy;
+  key_BINLOG_COND_queue_busy, key_COND_slave_list;
 PSI_cond_key key_RELAYLOG_COND_relay_log_updated,
   key_RELAYLOG_COND_bin_log_updated, key_COND_wakeup_ready,
   key_COND_wait_commit;
@@ -1097,7 +1098,8 @@ static PSI_cond_info all_server_conds[]=
   { &key_COND_gtid_ignore_duplicates, "COND_gtid_ignore_duplicates", 0},
   { &key_COND_ack_receiver, "Ack_receiver::cond", 0},
   { &key_COND_binlog_send, "COND_binlog_send", 0},
-  { &key_TABLE_SHARE_COND_rotation, "TABLE_SHARE::COND_rotation", 0}
+  { &key_TABLE_SHARE_COND_rotation, "TABLE_SHARE::COND_rotation", 0},
+  { &key_COND_slave_list, "COND_slave_list", PSI_FLAG_GLOBAL}
 };
 
 PSI_thread_key key_thread_delayed_insert,
@@ -1520,12 +1522,35 @@ static void end_ssl();
 ** Code to end mysqld
 ****************************************************************************/
 
-static my_bool kill_all_threads(THD *thd, void *)
+
+static bool is_dump_thread_no_lock(THD *thd)
+{
+
+  DBUG_ASSERT(!thd->rpl_dump_thread ||
+              my_hash_search(&slave_list, (uchar*) &thd->variables.server_id, 4));
+  return thd->rpl_dump_thread;
+}
+
+static bool is_dump_thread(THD *thd)
+{
+  bool rc;
+
+  mysql_mutex_lock(&LOCK_slave_list);
+  rc= is_dump_thread_no_lock(thd);
+  mysql_mutex_unlock(&LOCK_slave_list);
+
+  return rc;
+}
+
+static my_bool kill_all_threads(THD *thd, void * )
 {
   DBUG_PRINT("quit", ("Informing thread %ld that it's time to die",
                       (ulong) thd->thread_id));
   /* We skip slave threads on this first loop through. */
   if (thd->slave_thread)
+    return 0;
+  /* We skip master threads */
+  if (is_dump_thread(thd))
     return 0;
 
   if (DBUG_EVALUATE_IF("only_kill_system_threads", !thd->system_thread, 0))
@@ -1564,10 +1589,52 @@ static my_bool kill_all_threads(THD *thd, void *)
 
 static my_bool warn_threads_still_active(THD *thd, void *)
 {
+  /* We still skip dump threads */
+  if (is_dump_thread(thd))
+    return 0;
   sql_print_warning("%s: Thread %llu (user : '%s') did not exit\n", my_progname,
                     (ulonglong) thd->thread_id,
                     (thd->main_security_ctx.user ?
                      thd->main_security_ctx.user : ""));
+  return 0;
+}
+
+static my_bool kill_all_dump_threads(THD *thd, void *)
+{
+  /* e.g "slow" shutdown leaves out dump threads */
+
+  if (!is_dump_thread(thd))
+    return 0;
+
+  if (thd->vio_ok())
+  {
+    if (global_system_variables.log_warnings)
+      sql_print_warning(ER_DEFAULT(ER_FORCING_CLOSE), my_progname,
+                        (ulong) thd->thread_id,
+                        (thd->main_security_ctx.user ?
+                         thd->main_security_ctx.user : ""));
+    /*
+      close_connection() might need a valid current_thd
+      for memory allocation tracking.
+    */
+    THD *save_thd= current_thd;
+    set_current_thd(thd);
+    close_connection(thd);
+    set_current_thd(save_thd);
+  }
+  return 0;
+}
+
+static my_bool dump_thread_report_status(THD *thd, void *)
+{
+  // dump thread may not have yet current_linfo set
+  if (is_dump_thread_no_lock(thd))
+    sql_print_warning("Dump thread %llu last sent to server %lu "
+                      "binlog file:pos %s:%llu",
+                      thd->thread_id, thd->variables.server_id,
+                      thd->current_linfo ?
+                      my_basename(thd->current_linfo->log_file_name) : "NULL",
+                      thd->current_linfo ? thd->current_linfo->pos : 0);
   return 0;
 }
 
@@ -1651,7 +1718,54 @@ void kill_mysql(THD *thd)
   {
     my_free(user);
   }
-  break_connect_loop();
+  if (DBUG_EVALUATE_IF("mysql_admin_slow_shutdown", 1,
+                       thd->lex->is_slaves_wait_shutdown))
+  {
+    mysql_bin_log.slaves_wait_shutdown= MYSQL_BIN_LOG::SHDN_PREPARE;
+    debug_sync_set_action(thd,
+                          STRING_WITH_LEN("now SIGNAL wait_for_done_waiting"));
+    DBUG_EXECUTE_IF("simulate_delay_at_shutdown",
+                    {
+                      DBUG_ASSERT(slave_list.records == 3);
+                      const char act[]=
+                        "now "
+                        "SIGNAL greetings_from_kill_mysql";
+                      DBUG_ASSERT(!debug_sync_set_action(thd,
+                                                         STRING_WITH_LEN(act)));
+                    };);
+    break_connect_loop();
+  }
+}
+
+
+void end_dump_threads()
+{
+  if (mysql_bin_log.slaves_wait_shutdown == MYSQL_BIN_LOG::SHDN_PREPARE)
+  {
+    mysql_bin_log.lock_binlog_end_pos();
+    // set a mark for dump threads to prepare their exiting
+    mysql_bin_log.slaves_wait_shutdown= MYSQL_BIN_LOG::SHDN_DOIT;
+    // wakeup eager ones
+    mysql_bin_log.signal_bin_log_update();
+    mysql_bin_log.unlock_binlog_end_pos();
+    // wait for the rest slow ones
+
+    mysql_mutex_lock(&LOCK_slave_list);
+    while (slave_list.records > 0)
+    {
+      struct timespec ts;
+      set_timespec_nsec(ts, 60);
+
+      if (global_system_variables.log_warnings > 1)
+        server_threads.iterate(dump_thread_report_status);
+      mysql_cond_timedwait(&COND_slave_list, &LOCK_slave_list, &ts);
+    }
+    mysql_mutex_unlock(&LOCK_slave_list);
+  }
+  else
+  {
+    server_threads.iterate(kill_all_dump_threads);
+  }
 }
 
 
@@ -1717,12 +1831,12 @@ static void close_connections(void)
   */
   DBUG_PRINT("info", ("thread_count: %u", uint32_t(thread_count)));
 
-  for (int i= 0; thread_count && i < 1000; i++)
+  for (int i= 0; thread_count && i < 1000; i++)  // TODO: MDEV-18450 wait for "external" fixes and then see if thread_count needs slave_list.records subtraction.
     my_sleep(20000);
 
   if (global_system_variables.log_warnings)
     server_threads.iterate(warn_threads_still_active);
-
+  end_dump_threads();
   end_slave();
 #ifdef WITH_WSREP
   if (wsrep_inited == 1)
@@ -2070,6 +2184,7 @@ static void clean_up_mutexes()
   mysql_mutex_destroy(&LOCK_commit_ordered);
   mysql_mutex_destroy(&LOCK_slave_background);
   mysql_cond_destroy(&COND_slave_background);
+  mysql_cond_destroy(&COND_slave_list);
 #ifndef EMBEDDED_LIBRARY
   mysql_mutex_destroy(&LOCK_error_log);
 #endif
@@ -2503,6 +2618,7 @@ void close_connection(THD *thd, uint sql_errno)
     sleep(0); /* Workaround to avoid tailcall optimisation */
   }
   mysql_audit_notify_connection_disconnect(thd, sql_errno);
+  thd->rpl_dump_thread= false;
   DBUG_VOID_RETURN;
 }
 
@@ -4459,6 +4575,7 @@ static int init_thread_environment()
   mysql_mutex_init(key_LOCK_server_started,
                    &LOCK_server_started, MY_MUTEX_INIT_FAST);
   mysql_cond_init(key_COND_server_started, &COND_server_started, NULL);
+  mysql_cond_init(key_COND_slave_list, &COND_slave_list, NULL);
   sp_cache_init();
 #ifdef HAVE_EVENT_SCHEDULER
   Events::init_mutexes();

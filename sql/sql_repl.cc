@@ -2126,8 +2126,11 @@ static int init_binlog_sender(binlog_send_info *info,
   // set current pos too
   linfo->pos= *pos;
 
+  // dump thread linfo set is protected to avoid any slow shutdown race
+  mysql_mutex_lock(&LOCK_slave_list);
   // note: publish that we use file, before we open it
   thd->current_linfo= linfo;
+  mysql_mutex_unlock(&LOCK_slave_list);
 
   if (check_start_offset(info, linfo->log_file_name, *pos))
     return 1;
@@ -2393,7 +2396,8 @@ static int wait_new_events(binlog_send_info *info,         /* in */
                         &stage_master_has_sent_all_binlog_to_slave,
                         &old_stage);
 
-  while (!should_stop(info))
+  while (!should_stop(info) &&
+         mysql_bin_log.slaves_wait_shutdown != MYSQL_BIN_LOG::SHDN_DOIT)
   {
     *end_pos_ptr= mysql_bin_log.get_binlog_end_pos(binlog_end_pos_filename);
     if (strcmp(linfo->log_file_name, binlog_end_pos_filename) != 0)
@@ -2518,7 +2522,8 @@ static my_off_t get_binlog_end_pos(binlog_send_info *info,
        * check if we should wait for more data
        */
       if ((info->flags & BINLOG_DUMP_NON_BLOCK) ||
-          (info->thd->variables.server_id == 0))
+          (info->thd->variables.server_id == 0) ||
+          mysql_bin_log.slaves_wait_shutdown == MYSQL_BIN_LOG::SHDN_DOIT)
       {
         info->should_stop= true;
         return 0;
@@ -2745,6 +2750,14 @@ void mysql_binlog_send(THD* thd, char* log_ident, my_off_t pos,
     info->error= ER_UNKNOWN_ERROR;
     goto err;
   }
+  DBUG_EXECUTE_IF("simulate_delay_at_shutdown",
+                 {
+                   const char act[]=
+                     "now "
+                     "WAIT_FOR greetings_from_kill_mysql";
+                   DBUG_ASSERT(!debug_sync_set_action(thd,
+                                                      STRING_WITH_LEN(act)));
+                 };);
 
   /*
     heartbeat_period from @master_heartbeat_period user variable

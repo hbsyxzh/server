@@ -100,8 +100,12 @@ void unregister_slave(THD* thd, bool only_mine, bool need_mutex)
 	(!only_mine || old_si->thd == thd))
     my_hash_delete(&slave_list, (uchar*)old_si);
 
+
+    if (slave_list.records == 0)
+      mysql_cond_broadcast(&COND_slave_list);
     if (need_mutex)
       mysql_mutex_unlock(&LOCK_slave_list);
+    thd->rpl_dump_thread= false;
   }
 }
 
@@ -152,6 +156,7 @@ int register_slave(THD* thd, uchar* packet, size_t packet_length)
   unregister_slave(thd,0,0);
   res= my_hash_insert(&slave_list, (uchar*) si);
   mysql_mutex_unlock(&LOCK_slave_list);
+  thd->rpl_dump_thread= true;
   return res;
 
 err:
