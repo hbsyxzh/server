@@ -202,6 +202,8 @@ int mysql_load(THD *thd,sql_exchange *ex,TABLE_LIST *table_list,
   bool transactional_table __attribute__((unused));
   DBUG_ENTER("mysql_load");
 
+  thd->lex->select_lex.first_execution_attempt= FALSE;
+
   /*
     Bug #34283
     mysqlbinlog leaves tmpfile after termination if binlog contains

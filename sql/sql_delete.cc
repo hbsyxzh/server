@@ -474,6 +474,8 @@ int mysql_prepare_delete(THD *thd, TABLE_LIST *table_list, Item **conds)
   DBUG_ENTER("mysql_prepare_delete");
   List<Item> all_fields;
 
+  select_lex->first_execution_attempt= FALSE;
+
   thd->lex->allow_sum_func= 0;
   if (setup_tables_and_check_access(thd, &thd->lex->select_lex.context,
                                     &thd->lex->select_lex.top_join_list,

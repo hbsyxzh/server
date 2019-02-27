@@ -1010,6 +1010,8 @@ bool mysql_prepare_update(THD *thd, TABLE_LIST *table_list,
   SELECT_LEX *select_lex= &thd->lex->select_lex;
   DBUG_ENTER("mysql_prepare_update");
 
+  select_lex->first_execution_attempt= FALSE;
+
 #ifndef NO_EMBEDDED_ACCESS_CHECKS
   table_list->grant.want_privilege= table->grant.want_privilege= 
     (SELECT_ACL & ~table->grant.privilege);

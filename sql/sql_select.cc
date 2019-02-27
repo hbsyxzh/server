@@ -638,6 +638,8 @@ JOIN::prepare(Item ***rref_pointer_array,
   join_list= &select_lex->top_join_list;
   union_part= unit_arg->is_union();
 
+  select_lex->first_execution_attempt= FALSE;
+
   // simple check that we got usable conds
   dbug_print_item(conds);
 

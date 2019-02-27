@@ -1400,6 +1400,8 @@ bool mysql_prepare_insert(THD *thd, TABLE_LIST *table_list,
   /* INSERT should have a SELECT or VALUES clause */
   DBUG_ASSERT (!select_insert || !values);
 
+  select_lex->first_execution_attempt= FALSE;
+
   if (mysql_handle_derived(thd->lex, DT_INIT))
     DBUG_RETURN(TRUE); 
   if (table_list->handle_derived(thd->lex, DT_MERGE_FOR_INSERT))
@@ -1510,7 +1512,6 @@ bool mysql_prepare_insert(THD *thd, TABLE_LIST *table_list,
       DBUG_RETURN(TRUE);
     }
     select_lex->fix_prepare_information(thd, &fake_conds, &fake_conds);
-    select_lex->first_execution= 0;
   }
   /*
     Only call prepare_for_posistion() if we are not performing a DELAYED

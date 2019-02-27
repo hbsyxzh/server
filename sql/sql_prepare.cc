@@ -2533,6 +2533,9 @@ void reinit_stmt_before_use(THD *thd, LEX *lex)
       else
         sl->having= NULL;
       DBUG_ASSERT(sl->join == 0);
+    }
+    if (!sl->first_execution_attempt)
+    {
       ORDER *order;
       /* Fix GROUP list */
       if (sl->group_list_ptrs && sl->group_list_ptrs->size() > 0)
@@ -2544,10 +2547,15 @@ void reinit_stmt_before_use(THD *thd, LEX *lex)
         }
       }
       for (order= sl->group_list.first; order; order= order->next)
+      {
         order->item= &order->item_ptr;
+      }
       /* Fix ORDER list */
       for (order= sl->order_list.first; order; order= order->next)
+      {
         order->item= &order->item_ptr;
+      }
+
       {
 #ifndef DBUG_OFF
         bool res=
@@ -2556,6 +2564,7 @@ void reinit_stmt_before_use(THD *thd, LEX *lex)
         DBUG_ASSERT(res == 0);
       }
     }
+
     {
       SELECT_LEX_UNIT *unit= sl->master_unit();
       unit->unclean();

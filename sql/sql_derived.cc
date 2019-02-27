@@ -1032,8 +1032,7 @@ bool mysql_derived_reinit(THD *thd, LEX *lex, TABLE_LIST *derived)
                        derived->get_unit()));
   st_select_lex_unit *unit= derived->get_unit();
 
-  if (derived->table)
-    derived->merged_for_insert= FALSE;
+  derived->merged_for_insert= FALSE;
   unit->unclean();
   unit->types.empty();
   /* for derived tables & PS (which can't be reset by Item_subquery) */

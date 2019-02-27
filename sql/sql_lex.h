@@ -875,8 +875,15 @@ public:
     variable to inidicate the optimization/execution state of every
     subquery. Prepared statements work OK in that regard, as in
     case of an error during prepare the PS is not created.
+
+    TODO: make a bitmap with execution stages done for nest bool flags
   */
-  bool first_execution;
+  bool first_execution; // where/having saved
+  /*
+     False if we have started execution and so there is something to cleanup
+     in tables/derived tables
+  */
+  bool first_execution_attempt;
   bool first_natural_join_processing;
   bool first_cond_optimization;
   /* do not wrap view fields with Item_ref */
